@@ -1,0 +1,15 @@
+fileFormatVersion: 2
+guid: 5955cdb9174e72b4498a5ef556e09c55
+timeCreated: 1482610489
+licenseType: Store
+DefaultImporter:
+  userData: 
+  assetBundleName: 
+  assetBundleVariant: 
+AssetOrigin:
+  serializedVersion: 1
+  productId: 79343
+  packageName: Http Client
+  packageVersion: 3.1.0
+  assetPath: Assets/HttpClient/Example/ExampleScene.unity
+  uploadId: 645311

@@ -1,0 +1,15 @@
+fileFormatVersion: 2
+guid: 245176cbffbffab419899a5f08552b07
+timeCreated: 1482880608
+licenseType: Store
+TextScriptImporter:
+  userData: 
+  assetBundleName: 
+  assetBundleVariant: 
+AssetOrigin:
+  serializedVersion: 1
+  productId: 79343
+  packageName: Http Client
+  packageVersion: 3.1.0
+  assetPath: Assets/HttpClient/readme.txt
+  uploadId: 645311
