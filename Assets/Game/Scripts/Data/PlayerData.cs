@@ -44,17 +44,19 @@ public class PlayerData
 
     public static string GetPath()
     {
-        //string customPath = Application.persistentDataPath;
+#if UNITY_EDITOR
+        string customPath = Application.persistentDataPath;
 
-        //if (ParrelSync.ClonesManager.IsClone())
-        //{
-        //    string cloneName = ParrelSync.ClonesManager.GetCurrentProject().name;
-        //    customPath = Path.Combine(Application.persistentDataPath, cloneName);
-        //}
+        if (ParrelSync.ClonesManager.IsClone())
+        {
+            string cloneName = ParrelSync.ClonesManager.GetCurrentProject().name;
+            customPath = Path.Combine(Application.persistentDataPath, cloneName);
+        }
 
-        //return Path.Combine(customPath, "player_data.fo");
-
+        return Path.Combine(customPath, "player_data.fo");
+#else
         return Path.Combine(Application.persistentDataPath, "player_data.fo");
+#endif
     }
 
     public static PlayerData LoadData()

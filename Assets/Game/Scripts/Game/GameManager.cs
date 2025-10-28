@@ -1,4 +1,5 @@
 using NUnit.Framework;
+using PimDeWitte.UnityMainThreadDispatcher;
 using System.Collections;
 using System.Collections.Generic;
 using System.Linq;
@@ -521,12 +522,15 @@ public class GameManager : MonoBehaviour
 
         interstitialAdManager.ShowInterstitial(() =>
         {
-            crossfade.GetComponent<CanvasGroup>().blocksRaycasts = false;
+            UnityMainThreadDispatcher.Instance().Enqueue(() =>
+            {
+                crossfade.GetComponent<CanvasGroup>().blocksRaycasts = false;
 
-            resultPanel.gameObject.SetActive(true);
-            resultPanel.GetChild(1).GetComponent<Animator>().SetBool("isOpen", true);
+                resultPanel.gameObject.SetActive(true);
+                resultPanel.GetChild(1).GetComponent<Animator>().SetBool("isOpen", true);
 
-            StartCoroutine(SetPauseAfterAd());
+                StartCoroutine(SetPauseAfterAd());
+            });
         });
     }
 

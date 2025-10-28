@@ -1,4 +1,5 @@
 using Newtonsoft.Json;
+using PimDeWitte.UnityMainThreadDispatcher;
 using SocketIOClient;
 using SocketIOClient.Newtonsoft.Json;
 using System;
@@ -42,7 +43,7 @@ public class MultiplayerManager : MonoBehaviour
 
     public AudioMixer audioMixer;
 
-    private SocketIOUnity socket;
+    private SocketManager socketManager;
     private PlayerData playerData;
     private GameState gameState;
     private Dictionary<int, int> playerMapping;
@@ -159,7 +160,7 @@ public class MultiplayerManager : MonoBehaviour
         public string name;
     }
 
-    private async void Start()
+    private void Awake()
     {
         playerData = PlayerData.LoadData();
         gameState = GameState.MATCHMAKING;
@@ -171,6 +172,11 @@ public class MultiplayerManager : MonoBehaviour
 
         BannerAdManager.GetInstance().EnsureBannerVisible();
 
+        socketManager = SocketManager.GetInstance(playerData.playersName[0]);
+    }
+
+    private async void Start()
+    {
         matchmakingPanel.gameObject.SetActive(true);
         matchmakingPanel.GetChild(1).GetComponent<Animator>().SetBool("isOpen", true);
 
@@ -182,73 +188,17 @@ public class MultiplayerManager : MonoBehaviour
         UpdateMusicVolume();
         UpdateSfxVolume();
 
-        var uri = new Uri("https://briser-games-multiplayer-server.onrender.com");
+        socketManager.onServerEvent += HandleServerEvent;
 
-        socket = new SocketIOUnity(uri, new SocketIOOptions
+        if (!socketManager.socket.Connected)
         {
-            Query = new Dictionary<string, string>
-            {
-                { "token", "UNITY" },
-                { "player_name", playerData.playersName[0] }
-            },
-            Transport = SocketIOClient.Transport.TransportProtocol.WebSocket
-        });
+            await socketManager.socket.ConnectAsync();
+        }
+    }
 
-        socket.JsonSerializer = new NewtonsoftJsonSerializer();
-
-        socket.OnConnected += (sender, e) =>
-        {
-            Debug.Log("Connected to Server");
-        };
-
-        socket.OnDisconnected += (sender, e) =>
-        {
-            Debug.Log("Disconnected from server");
-
-            gameEvents.Enqueue(new GameEvent("disconnected", null));
-        };
-
-        socket.On("room_players", (response) =>
-        {
-            gameEvents.Enqueue(new GameEvent("room_players", response));
-        });
-
-        socket.On("player_index", (response) =>
-        {
-            gameEvents.Enqueue(new GameEvent("player_index", response));
-        });
-
-        socket.On("start_game", (response) =>
-        {
-            gameEvents.Enqueue(new GameEvent("start_game", response));
-        });
-
-        socket.On("after_draw_card", (response) =>
-        {
-            gameEvents.Enqueue(new GameEvent("after_draw_card", response));
-        });
-
-        socket.On("after_discard_card", (response) =>
-        {
-            gameEvents.Enqueue(new GameEvent("after_discard_card", response));
-        });
-
-        socket.On("win", (response) =>
-        {
-            gameEvents.Enqueue(new GameEvent("win", response));
-        });
-
-        socket.On("disconnect_on_game", (response) =>
-        {
-            gameEvents.Enqueue(new GameEvent("disconnect_on_game", response));
-        });
-
-        socket.On("one_player_win", (response) =>
-        {
-            gameEvents.Enqueue(new GameEvent("one_player_win", response));
-        });
-
-        await socket.ConnectAsync();
+    private void HandleServerEvent(string eventName, SocketIOResponse response)
+    {
+        gameEvents.Enqueue(new GameEvent(eventName, response));
     }
 
     private void Update()
@@ -377,13 +327,15 @@ public class MultiplayerManager : MonoBehaviour
     private async void OnApplicationQuit()
     {
         await DisconnectSocket();
+
+        socketManager.onServerEvent -= HandleServerEvent;
     }
 
     private Task DisconnectSocket()
     {
-        if (socket != null && socket.Connected)
+        if (socketManager.socket != null && socketManager.socket.Connected)
         {
-            return socket.DisconnectAsync();
+            return socketManager.socket.DisconnectAsync();
         }
 
         return Task.CompletedTask;
@@ -570,20 +522,25 @@ public class MultiplayerManager : MonoBehaviour
 
         yield return new WaitUntil(() => task.IsCompleted);
 
+        socketManager.onServerEvent -= HandleServerEvent;
+
         yield return new WaitForSecondsRealtime(3f);
 
         toastManager.PauseToasts();
 
         interstitialAdManager.ShowInterstitial(() =>
         {
-            toastManager.ResumeToasts();
+            UnityMainThreadDispatcher.Instance().Enqueue(() =>
+            {
+                toastManager.ResumeToasts();
 
-            crossfade.GetComponent<CanvasGroup>().blocksRaycasts = false;
+                crossfade.GetComponent<CanvasGroup>().blocksRaycasts = false;
 
-            resultPanel.gameObject.SetActive(true);
-            resultPanel.GetChild(1).GetComponent<Animator>().SetBool("isOpen", true);
+                resultPanel.gameObject.SetActive(true);
+                resultPanel.GetChild(1).GetComponent<Animator>().SetBool("isOpen", true);
 
-            StartCoroutine(SetPauseAfterAd());
+                StartCoroutine(SetPauseAfterAd());
+            });
         });
     }
 
@@ -638,7 +595,7 @@ public class MultiplayerManager : MonoBehaviour
                 {
                     if (activeAnimations == 0 && gameState == GameState.PLAYING && !isProcessing)
                     {
-                        socket.Emit("draw_card", new DrawAction("draw_from_deck", turnType, playerTurn, playerId));
+                        socketManager.socket.Emit("draw_card", new DrawAction("draw_from_deck", turnType, playerTurn, playerId));
 
                         foreach (Button button in buttonsClickable)
                         {
@@ -659,7 +616,7 @@ public class MultiplayerManager : MonoBehaviour
                     {
                         if (activeAnimations == 0 && gameState == GameState.PLAYING && !isProcessing)
                         {
-                            socket.Emit("draw_card", new DrawAction("draw_discarded", turnType, playerTurn, playerId));
+                            socketManager.socket.Emit("draw_card", new DrawAction("draw_discarded", turnType, playerTurn, playerId));
 
                             foreach (Button button in buttonsClickable)
                             {
@@ -687,7 +644,7 @@ public class MultiplayerManager : MonoBehaviour
                         {
                             CardInfo cardInfo = cardButton.GetComponent<CardInfo>();
 
-                            socket.Emit("discard_card", new DiscardAction(CardToString(cardInfo), turnType, playerTurn, playerId));
+                            socketManager.socket.Emit("discard_card", new DiscardAction(CardToString(cardInfo), turnType, playerTurn, playerId));
 
                             foreach (Button button in buttonsClickable)
                             {
@@ -845,6 +802,8 @@ public class MultiplayerManager : MonoBehaviour
 
         var task = DisconnectSocket();
         yield return new WaitUntil(() => task.IsCompleted);
+
+        socketManager.onServerEvent -= HandleServerEvent;
 
         yield return new WaitForSecondsRealtime(0.3f);
         Time.timeScale = 1f;
