@@ -6,22 +6,18 @@ using UnityEngine;
 
 public class SocketManager
 {
-    private static SocketManager instance;
-
     public SocketIOUnity socket;
 
     public event Action<string, SocketIOResponse> onServerEvent;
 
-    public static SocketManager GetInstance(string playerName)
+    public SocketManager(string playerName)
     {
-        instance ??= new SocketManager(playerName);
-
-        return instance;
+        CreateSocket(playerName);
     }
 
-    private SocketManager(string playerName)
+    private void CreateSocket(string playerName)
     {
-        var uri = new Uri("https://briser-games-multiplayer-server.onrender.com");
+        Uri uri = new Uri("https://briser-games-multiplayer-server.onrender.com");
 
         socket = new SocketIOUnity(uri, new SocketIOOptions
         {
@@ -35,21 +31,28 @@ public class SocketManager
 
         socket.JsonSerializer = new NewtonsoftJsonSerializer();
 
-        socket.OnConnected += (sender, e) => Debug.Log("Connected to Server");
-        socket.OnDisconnected += (sender, e) =>
-        {
-            Debug.Log("Disconnected from Server");
-            onServerEvent?.Invoke("disconnected", null);
-        };
+        socket.OnConnected += OnConnected;
+        socket.OnDisconnected += OnDisconnected;
 
         RegisterEvent("room_players");
         RegisterEvent("player_index");
         RegisterEvent("start_game");
         RegisterEvent("after_draw_card");
         RegisterEvent("after_discard_card");
-        RegisterEvent("win");
+        RegisterEvent("win_after_discard");
         RegisterEvent("disconnect_on_game");
-        RegisterEvent("one_player_win");
+        RegisterEvent("win");
+    }
+
+    private void OnConnected(object sender, EventArgs e)
+    {
+        Debug.Log("Connected to Server");
+    }
+
+    private void OnDisconnected(object sender, string e)
+    {
+        Debug.Log("Disconnected from Server");
+        onServerEvent?.Invoke("disconnected", null);
     }
 
     private void RegisterEvent(string eventName)
@@ -58,5 +61,35 @@ public class SocketManager
         {
             onServerEvent?.Invoke(eventName, response);
         });
+    }
+
+    public void CleanupSocket()
+    {
+        if (socket == null)
+            return;
+
+        try
+        {
+            socket.Off("room_players");
+            socket.Off("player_index");
+            socket.Off("start_game");
+            socket.Off("after_draw_card");
+            socket.Off("after_discard_card");
+            socket.Off("win_after_discard");
+            socket.Off("disconnect_on_game");
+            socket.Off("win");
+
+            socket.OnConnected -= OnConnected;
+            socket.OnDisconnected -= OnDisconnected;
+
+            socket.Dispose();
+            socket = null;
+
+            Debug.Log("Socket cleaned up successfully.");
+        }
+        catch (Exception ex)
+        {
+            Debug.LogWarning($"Error cleaning up socket: {ex.Message}");
+        }
     }
 }

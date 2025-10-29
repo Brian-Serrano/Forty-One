@@ -64,12 +64,14 @@ public class MenuManager : MonoBehaviour
     private PlayerData playerData;
     private ToastManager toastManager;
     private FortyOneHTTPClient client;
+    private MainThreadRun mainThreadRun;
 
     private void Awake()
     {
         playerData = PlayerData.LoadData();
         toastManager = GetComponent<ToastManager>();
         client = FortyOneHTTPClient.GetInstance();
+        mainThreadRun = MainThreadRun.GetInstance();
 
         BannerAdManager.GetInstance().EnsureBannerVisible();
 
@@ -148,6 +150,8 @@ public class MenuManager : MonoBehaviour
                 }
             }
         }
+
+        mainThreadRun.Update();
     }
 
     public void ComputerGame()

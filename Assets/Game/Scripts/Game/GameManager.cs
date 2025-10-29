@@ -1,5 +1,4 @@
 using NUnit.Framework;
-using PimDeWitte.UnityMainThreadDispatcher;
 using System.Collections;
 using System.Collections.Generic;
 using System.Linq;
@@ -20,6 +19,7 @@ public class GameManager : MonoBehaviour
     public List<TMP_Text> playersName;
     public Canvas canvas;
     public Animator crossfade;
+    public Button endGameButton;
 
     public Transform pausePanel;
     public Slider musicVolumeSlider;
@@ -41,10 +41,13 @@ public class GameManager : MonoBehaviour
     private GameState gameState;
     private PlayerData playerData;
     private InterstitialAdManager interstitialAdManager;
+    private RectTransform drawnDiscardedCard;
+    private MainThreadRun mainThreadRun;
 
     private int activeAnimations = 0;
     private int playerTurn;
     private int playerFirstTurn;
+    private bool lastPickChance = true;
 
     private void Awake()
     {
@@ -52,6 +55,8 @@ public class GameManager : MonoBehaviour
         turnType = TurnType.DRAW;
         gameState = GameState.PLAYING;
         interstitialAdManager = InterstitialAdManager.GetInstance();
+        drawnDiscardedCard = null;
+        mainThreadRun = MainThreadRun.GetInstance();
 
         BannerAdManager.GetInstance().EnsureBannerVisible();
 
@@ -85,11 +90,16 @@ public class GameManager : MonoBehaviour
                             }
                             if (instance.transform.parent == discardParent)
                             {
+                                if (endGameButton.gameObject.activeSelf)
+                                {
+                                    endGameButton.gameObject.SetActive(false);
+                                }
+
                                 StartCoroutine(PlayerDrawDiscardedCard());
                             }
                             break;
                         case TurnType.DISCARD:
-                            if (instance.transform.parent == playerParents[playerTurn])
+                            if (instance.transform.parent == playerParents[playerTurn] && instance.transform != drawnDiscardedCard)
                             {
                                 StartCoroutine(PlayerDiscardCard(instance.GetComponent<RectTransform>()));
                             }
@@ -136,17 +146,19 @@ public class GameManager : MonoBehaviour
                     break;
             }
         }
+
+        mainThreadRun.Update();
     }
 
     private IEnumerator ComputerTurn()
     {
         yield return new WaitForSeconds(0.5f);
 
-        int discardOption = discardParent.childCount > 0 ? GetBestScore(playerParents[playerTurn], discardParent.GetChild(discardParent.childCount - 1).GetComponent<RectTransform>()) : 0;
+        List<Card> hand = RectsToCards(playerParents[playerTurn]);
 
-        int deckOption = EstimateDeckDraw(playerParents[playerTurn], deck);
+        bool shouldPickDiscardCard = discardParent.childCount > 0 && ShouldPickDiscardCard(hand, RectToCard(discardParent.GetChild(discardParent.childCount - 1)));
 
-        if (discardOption > deckOption)
+        if (shouldPickDiscardCard)
         {
             yield return DrawDiscardedCard(playerTurn);
         }
@@ -164,6 +176,40 @@ public class GameManager : MonoBehaviour
         CheckWin();
     }
 
+    private IEnumerator ComputerLastTurn()
+    {
+        yield return new WaitForSeconds(0.5f);
+
+        yield return DrawDiscardedCard(playerTurn);
+
+        yield return new WaitForSeconds(0.5f);
+
+        int bestIndexToDiscard = GetBestToDiscard();
+
+        yield return DiscardCard(playerParents[playerTurn].GetChild(bestIndexToDiscard).GetComponent<RectTransform>());
+
+        CheckWin();
+    }
+
+    private Card RectToCard(Transform rect)
+    {
+        CardInfo card = rect.GetComponent<CardInfo>();
+
+        return new Card(card.suit, card.value);
+    }
+
+    private List<Card> RectsToCards(RectTransform rects)
+    {
+        List<Card> hand = new List<Card>();
+
+        for (int i = 0; i < rects.childCount; i++)
+        {
+            hand.Add(RectToCard(rects.GetChild(i)));
+        }
+
+        return hand;
+    }
+
     private int GetBestToDiscard()
     {
         int bestScore = 0;
@@ -171,17 +217,9 @@ public class GameManager : MonoBehaviour
 
         for (int i = 0; i < playerParents[playerTurn].childCount; i++)
         {
-            var hypotheticalHand = new List<Card>();
+            var hypotheticalHand = RectsToCards(playerParents[playerTurn]);
 
-            for (int j = 0; j < playerParents[playerTurn].childCount; j++)
-            {
-                if (i != j)
-                {
-                    CardInfo cardInfo = playerParents[playerTurn].GetChild(j).GetComponent<CardInfo>();
-
-                    hypotheticalHand.Add(new Card(cardInfo.suit, cardInfo.value));
-                }
-            }
+            hypotheticalHand.RemoveAt(i);
 
             int score = GetBestSuitScore(hypotheticalHand);
 
@@ -195,49 +233,26 @@ public class GameManager : MonoBehaviour
         return bestIndexToDiscard;
     }
 
-    private int GetBestScore(RectTransform players, RectTransform drawn)
+    bool ShouldPickDiscardCard(List<Card> hand, Card discardedCard)
     {
-        int bestScore = 0;
+        int currentScore = GetBestSuitScore(hand);
 
-        for (int i = 0; i < players.childCount; i++)
+        List<Card> newHand = new List<Card>(hand) { discardedCard };
+
+        int bestScore = int.MinValue;
+
+        foreach (Card card in newHand)
         {
-            var hypotheticalHand = new List<Card>();
+            if (card == discardedCard) continue;
 
-            for (int j = 0; j < players.childCount; j++)
-            {
-                CardInfo cardInfo = players.GetChild(j).GetComponent<CardInfo>();
+            List<Card> simulated = new List<Card>(newHand);
+            simulated.Remove(card);
 
-                hypotheticalHand.Add(new Card(cardInfo.suit, cardInfo.value));
-            }
-
-            CardInfo drawnInfo = drawn.GetComponent<CardInfo>();
-
-            hypotheticalHand.Add(new Card(drawnInfo.suit, drawnInfo.value));
-
-            hypotheticalHand.RemoveAt(i);
-
-            int score = GetBestSuitScore(hypotheticalHand);
-
+            int score = GetBestSuitScore(simulated);
             bestScore = Mathf.Max(bestScore, score);
         }
 
-        return bestScore;
-    }
-
-    private int EstimateDeckDraw(RectTransform players, List<RectTransform> remainingDeck)
-    {
-        int simulations = Mathf.Min(5, remainingDeck.Count);
-        int totalScore = 0;
-
-        for (int i = 0; i < simulations; i++)
-        {
-            RectTransform randomCard = remainingDeck[Random.Range(0, remainingDeck.Count)];
-
-            int score = GetBestScore(players, randomCard);
-            totalScore += score;
-        }
-
-        return totalScore / simulations;
+        return bestScore > currentScore;
     }
 
     private IEnumerator InitialDrawCard()
@@ -321,6 +336,8 @@ public class GameManager : MonoBehaviour
             card.SetParent(canvas.transform);
             card.SetSiblingIndex(canvas.transform.childCount - 4);
 
+            drawnDiscardedCard = card;
+
             yield return MoveToTarget(playerParents[playerIndex].position, card, duration);
 
             card.SetParent(playerParents[playerIndex]);
@@ -342,8 +359,15 @@ public class GameManager : MonoBehaviour
 
         UpdateFace(cardInfo);
 
+        if (card == drawnDiscardedCard)
+        {
+            Debug.Log("A discarded card was discarded again");
+        }
+
         card.SetParent(canvas.transform);
         card.SetSiblingIndex(canvas.transform.childCount - 4);
+
+        drawnDiscardedCard = null;
 
         yield return MoveToTarget(discardParent.position, card, duration);
 
@@ -358,14 +382,7 @@ public class GameManager : MonoBehaviour
         }
         else
         {
-            if (deck.Count <= 0)
-            {
-                StartCoroutine(Win(CheckHighest()));
-            }
-            else
-            {
-                SwitchPlayerTurn();
-            }
+            SwitchPlayerTurn();
         }
     }
 
@@ -386,14 +403,7 @@ public class GameManager : MonoBehaviour
 
     private bool Check41(int playerIndex)
     {
-        List<Card> hand = new List<Card>();
-
-        for (int i = 0; i < playerParents[playerIndex].childCount; i++)
-        {
-            CardInfo cardInfo = playerParents[playerIndex].GetChild(i).GetComponent<CardInfo>();
-
-            hand.Add(new Card(cardInfo.suit, cardInfo.value));
-        }
+        List<Card> hand = RectsToCards(playerParents[playerIndex]);
 
         int bestScore = GetBestSuitScore(hand);
 
@@ -407,14 +417,7 @@ public class GameManager : MonoBehaviour
 
         for (int i = 0; i < playerParents.Count; i++)
         {
-            List<Card> hand = new List<Card>();
-
-            for (int j = 0; j < playerParents[i].childCount; j++)
-            {
-                CardInfo cardInfo = playerParents[i].GetChild(j).GetComponent<CardInfo>();
-
-                hand.Add(new Card(cardInfo.suit, cardInfo.value));
-            }
+            List<Card> hand = RectsToCards(playerParents[i]);
 
             int score = GetBestSuitScore(hand);
 
@@ -462,7 +465,56 @@ public class GameManager : MonoBehaviour
     {
         playerTurn = playerTurn >= 3 ? 0 : playerTurn + 1;
 
-        if (playerTurn > 0) StartCoroutine(ComputerTurn());
+        if (playerTurn > 0)
+        {
+            if (deck.Count <= 0)
+            {
+                if (discardParent.childCount <= 0)
+                {
+                    EndGame();
+                    return;
+                }
+
+                List<Card> hand = RectsToCards(playerParents[playerTurn]);
+                Card discarded = RectToCard(discardParent.GetChild(discardParent.childCount - 1));
+
+                bool shouldPickDiscardCard = ShouldPickDiscardCard(hand, discarded);
+
+                if (shouldPickDiscardCard && lastPickChance)
+                {
+                    lastPickChance = false;
+                    StartCoroutine(ComputerLastTurn());
+                }
+                else
+                {
+                    EndGame();
+                }
+            }
+            else
+            {
+                StartCoroutine(ComputerTurn());
+            }
+        }
+        else
+        {
+            if (deck.Count <= 0)
+            {
+                if (lastPickChance)
+                {
+                    lastPickChance = false;
+                    endGameButton.gameObject.SetActive(true);
+                }
+                else
+                {
+                    EndGame();
+                }
+            }
+        }
+    }
+
+    public void EndGame()
+    {
+        StartCoroutine(Win(CheckHighest()));
     }
 
     private IEnumerator MoveToTarget(Vector3 targetPos, RectTransform rect, float duration = 0.1f)
@@ -488,6 +540,8 @@ public class GameManager : MonoBehaviour
     {
         crossfade.GetComponent<CanvasGroup>().blocksRaycasts = true;
 
+        Debug.Log("Game Ended");
+
         FaceUpAllCards();
 
         backgroundMusic.Stop();
@@ -506,14 +560,7 @@ public class GameManager : MonoBehaviour
 
         for (int i = 0; i < playerParents.Count; i++)
         {
-            List<Card> hand = new List<Card>();
-
-            for (int j = 0; j < playerParents[i].childCount; j++)
-            {
-                CardInfo cardInfo = playerParents[i].GetChild(j).GetComponent<CardInfo>();
-
-                hand.Add(new Card(cardInfo.suit, cardInfo.value));
-            }
+            List<Card> hand = RectsToCards(playerParents[i]);
 
             playersScoreResult[i].text = $"{playerData.playersName[i]}: {GetBestSuitScore(hand)}";
         }
@@ -522,7 +569,7 @@ public class GameManager : MonoBehaviour
 
         interstitialAdManager.ShowInterstitial(() =>
         {
-            UnityMainThreadDispatcher.Instance().Enqueue(() =>
+            mainThreadRun.Enqueue(() =>
             {
                 crossfade.GetComponent<CanvasGroup>().blocksRaycasts = false;
 

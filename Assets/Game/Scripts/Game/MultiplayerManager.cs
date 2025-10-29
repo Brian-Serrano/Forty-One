@@ -1,8 +1,4 @@
-using Newtonsoft.Json;
-using PimDeWitte.UnityMainThreadDispatcher;
 using SocketIOClient;
-using SocketIOClient.Newtonsoft.Json;
-using System;
 using System.Collections;
 using System.Collections.Generic;
 using System.Linq;
@@ -25,6 +21,7 @@ public class MultiplayerManager : MonoBehaviour
     public Sprite faceDownCardSprite;
     public Canvas canvas;
     public Animator crossfade;
+    public Button endGameButton;
 
     public Transform matchmakingPanel;
     public Transform resultPanel;
@@ -51,6 +48,7 @@ public class MultiplayerManager : MonoBehaviour
     private Queue<GameEvent> gameEvents;
     private ToastManager toastManager;
     private InterstitialAdManager interstitialAdManager;
+    private MainThreadRun mainThreadRun;
 
     private int playerId;
     private int activeAnimations = 0;
@@ -82,6 +80,7 @@ public class MultiplayerManager : MonoBehaviour
         public int player_turn;
         public List<Player> players;
         public string turn_type;
+        public string drawn_discarded_card;
 
         [System.Serializable]
         public class Player
@@ -99,13 +98,15 @@ public class MultiplayerManager : MonoBehaviour
         public string turn_type;
         public int player_turn;
         public int player_id;
+        public string drawn_discarded_card;
 
-        public DrawAction(string action, string turn_type, int player_turn, int player_id)
+        public DrawAction(string action, string turn_type, int player_turn, int player_id, string drawn_discarded_card)
         {
             this.action = action;
             this.turn_type = turn_type;
             this.player_turn = player_turn;
             this.player_id = player_id;
+            this.drawn_discarded_card = drawn_discarded_card;
         }
     }
 
@@ -116,18 +117,22 @@ public class MultiplayerManager : MonoBehaviour
         public string turn_type;
         public int player_turn;
         public int player_id;
+        public string drawn_discarded_card;
+        public bool last_pick_chance;
 
-        public DiscardAction(string card, string turn_type, int player_turn, int player_id)
+        public DiscardAction(string card, string turn_type, int player_turn, int player_id, string drawn_discarded_card, bool last_pick_chance)
         {
             this.card = card;
             this.turn_type = turn_type;
             this.player_turn = player_turn;
             this.player_id = player_id;
+            this.drawn_discarded_card = drawn_discarded_card;
+            this.last_pick_chance = last_pick_chance;
         }
     }
 
     [System.Serializable]
-    class WinData
+    class WinAfterDiscardData
     {
         public int player_id;
         public int winner;
@@ -143,10 +148,11 @@ public class MultiplayerManager : MonoBehaviour
         public int player_turn;
         public string turn_type;
         public bool players_turn_that_disconnected;
+        public string drawn_discarded_card;
     }
 
     [System.Serializable]
-    class OnePlayerWinData
+    class WinData
     {
         public int winner;
         public List<Result> result;
@@ -160,6 +166,17 @@ public class MultiplayerManager : MonoBehaviour
         public string name;
     }
 
+    [System.Serializable]
+    class EndGameData
+    {
+        public int player_id;
+
+        public EndGameData(int player_id)
+        {
+            this.player_id = player_id;
+        }
+    }
+
     private void Awake()
     {
         playerData = PlayerData.LoadData();
@@ -169,10 +186,9 @@ public class MultiplayerManager : MonoBehaviour
         gameEvents = new Queue<GameEvent>();
         toastManager = GetComponent<ToastManager>();
         interstitialAdManager = InterstitialAdManager.GetInstance();
+        mainThreadRun = MainThreadRun.GetInstance();
 
         BannerAdManager.GetInstance().EnsureBannerVisible();
-
-        socketManager = SocketManager.GetInstance(playerData.playersName[0]);
     }
 
     private async void Start()
@@ -187,6 +203,8 @@ public class MultiplayerManager : MonoBehaviour
 
         UpdateMusicVolume();
         UpdateSfxVolume();
+
+        socketManager = new SocketManager(playerData.playersName[0]);
 
         socketManager.onServerEvent += HandleServerEvent;
 
@@ -226,6 +244,8 @@ public class MultiplayerManager : MonoBehaviour
                     break;
             }
         }
+
+        mainThreadRun.Update();
     }
 
     private IEnumerator ProcessEvents(GameEvent gameEvent)
@@ -276,11 +296,16 @@ public class MultiplayerManager : MonoBehaviour
 
                 yield return HandleDiscardCard(discardAction);
 
-                break;
-            case "win":
-                WinData winData = gameEvent.response.GetValue<WinData>();
+                if (!discardAction.last_pick_chance && discardAction.player_turn == playerId)
+                {
+                    endGameButton.gameObject.SetActive(true);
+                }
 
-                yield return HandleWin(winData);
+                break;
+            case "win_after_discard":
+                WinAfterDiscardData winAfterDiscardData = gameEvent.response.GetValue<WinAfterDiscardData>();
+
+                yield return HandleWin(winAfterDiscardData);
 
                 break;
             case "disconnect_on_game":
@@ -294,17 +319,17 @@ public class MultiplayerManager : MonoBehaviour
 
                     if (disconnectData.players_turn_that_disconnected)
                     {
-                        OnPlayerTurn(disconnectData.player_turn, disconnectData.turn_type);
+                        OnPlayerTurn(disconnectData.player_turn, disconnectData.turn_type, disconnectData.drawn_discarded_card);
                     }
 
                     toastManager.ShowToast(playersName[playerMapping[disconnectData.player_id]].text + " Disconnected");
                 }
 
                 break;
-            case "one_player_win":
-                OnePlayerWinData onePlayerWinData = gameEvent.response.GetValue<OnePlayerWinData>();
+            case "win":
+                WinData winData = gameEvent.response.GetValue<WinData>();
 
-                yield return Win(onePlayerWinData.winner, onePlayerWinData.result);
+                yield return Win(winData.winner, winData.result);
 
                 break;
             case "disconnected":
@@ -319,16 +344,31 @@ public class MultiplayerManager : MonoBehaviour
         isProcessing = false;
     }
 
+    public void EndGame()
+    {
+        socketManager.socket.Emit("win", new EndGameData(playerId));
+
+        endGameButton.gameObject.SetActive(false);
+
+        if (deckParent.childCount > 0)
+        {
+            deckParent.GetChild(deckParent.childCount - 1).GetComponent<Button>().onClick.RemoveAllListeners();
+        }
+
+        if (discardedParent.childCount > 0)
+        {
+            discardedParent.GetChild(discardedParent.childCount - 1).GetComponent<Button>().onClick.RemoveAllListeners();
+        }
+    }
+
     private int PositiveMod(int value, int modulus)
     {
         return ((value % modulus) + modulus) % modulus;
     }
 
-    private async void OnApplicationQuit()
+    private IEnumerator OnApplicationQuit()
     {
-        await DisconnectSocket();
-
-        socketManager.onServerEvent -= HandleServerEvent;
+        yield return CleanupSocket();
     }
 
     private Task DisconnectSocket()
@@ -339,6 +379,17 @@ public class MultiplayerManager : MonoBehaviour
         }
 
         return Task.CompletedTask;
+    }
+
+    private IEnumerator CleanupSocket()
+    {
+        var task = DisconnectSocket();
+
+        yield return new WaitUntil(() => task.IsCompleted);
+
+        socketManager.onServerEvent -= HandleServerEvent;
+
+        socketManager.CleanupSocket();
     }
 
     private CardData FindCard(string serverCard)
@@ -423,7 +474,7 @@ public class MultiplayerManager : MonoBehaviour
             }
         }
 
-        OnPlayerTurn(startGameData.player_turn, startGameData.turn_type);
+        OnPlayerTurn(startGameData.player_turn, startGameData.turn_type, startGameData.drawn_discarded_card);
     }
 
     private IEnumerator HandleDrawCard(DrawAction drawAction)
@@ -476,17 +527,17 @@ public class MultiplayerManager : MonoBehaviour
             }
         }
 
-        OnPlayerTurn(drawAction.player_turn, drawAction.turn_type);
+        OnPlayerTurn(drawAction.player_turn, drawAction.turn_type, drawAction.drawn_discarded_card);
     }
 
     private IEnumerator HandleDiscardCard(DiscardAction discardAction)
     {
         yield return DiscardCard(discardAction.card, discardAction.player_id);
 
-        OnPlayerTurn(discardAction.player_turn, discardAction.turn_type);
+        OnPlayerTurn(discardAction.player_turn, discardAction.turn_type, discardAction.drawn_discarded_card);
     }
 
-    private IEnumerator HandleWin(WinData winData)
+    private IEnumerator HandleWin(WinAfterDiscardData winData)
     {
         yield return DiscardCard(winData.card, winData.player_id);
 
@@ -518,11 +569,7 @@ public class MultiplayerManager : MonoBehaviour
             playersScoreResult[result.id].text = $"{result.name}: {result.score}";
         }
 
-        var task = DisconnectSocket();
-
-        yield return new WaitUntil(() => task.IsCompleted);
-
-        socketManager.onServerEvent -= HandleServerEvent;
+        yield return CleanupSocket();
 
         yield return new WaitForSecondsRealtime(3f);
 
@@ -530,7 +577,7 @@ public class MultiplayerManager : MonoBehaviour
 
         interstitialAdManager.ShowInterstitial(() =>
         {
-            UnityMainThreadDispatcher.Instance().Enqueue(() =>
+            mainThreadRun.Enqueue(() =>
             {
                 toastManager.ResumeToasts();
 
@@ -569,7 +616,7 @@ public class MultiplayerManager : MonoBehaviour
         card.SetParent(discardedParent);
     }
 
-    private void OnPlayerTurn(int playerTurn, string turnType)
+    private void OnPlayerTurn(int playerTurn, string turnType, string drawnDiscardedCard)
     {
         for (int i = 0; i < playersName.Count; i++)
         {
@@ -585,24 +632,27 @@ public class MultiplayerManager : MonoBehaviour
             {
                 List<Button> buttonsClickable = new List<Button>();
 
-                Transform topCardInDeck = deckParent.GetChild(deckParent.childCount - 1);
-
-                Button topCardButton = topCardInDeck.GetComponent<Button>();
-
-                buttonsClickable.Add(topCardButton);
-
-                topCardButton.onClick.AddListener(() =>
+                if (deckParent.childCount > 0)
                 {
-                    if (activeAnimations == 0 && gameState == GameState.PLAYING && !isProcessing)
-                    {
-                        socketManager.socket.Emit("draw_card", new DrawAction("draw_from_deck", turnType, playerTurn, playerId));
+                    Transform topCardInDeck = deckParent.GetChild(deckParent.childCount - 1);
 
-                        foreach (Button button in buttonsClickable)
+                    Button topCardButton = topCardInDeck.GetComponent<Button>();
+
+                    buttonsClickable.Add(topCardButton);
+
+                    topCardButton.onClick.AddListener(() =>
+                    {
+                        if (activeAnimations == 0 && gameState == GameState.PLAYING && !isProcessing)
                         {
-                            button.onClick.RemoveAllListeners();
+                            socketManager.socket.Emit("draw_card", new DrawAction("draw_from_deck", turnType, playerTurn, playerId, ""));
+
+                            foreach (Button button in buttonsClickable)
+                            {
+                                button.onClick.RemoveAllListeners();
+                            }
                         }
-                    }
-                });
+                    });
+                }
 
                 if (discardedParent.childCount > 0)
                 {
@@ -616,11 +666,18 @@ public class MultiplayerManager : MonoBehaviour
                     {
                         if (activeAnimations == 0 && gameState == GameState.PLAYING && !isProcessing)
                         {
-                            socketManager.socket.Emit("draw_card", new DrawAction("draw_discarded", turnType, playerTurn, playerId));
+                            string card = CardToString(discarded.GetComponent<CardInfo>());
+
+                            socketManager.socket.Emit("draw_card", new DrawAction("draw_discarded", turnType, playerTurn, playerId, card));
 
                             foreach (Button button in buttonsClickable)
                             {
                                 button.onClick.RemoveAllListeners();
+                            }
+
+                            if (endGameButton.gameObject.activeSelf)
+                            {
+                                endGameButton.gameObject.SetActive(false);
                             }
                         }
                     });
@@ -634,24 +691,27 @@ public class MultiplayerManager : MonoBehaviour
 
                 for (int i = 0; i < playerCards.childCount; i++)
                 {
-                    Button cardButton = playerCards.GetChild(i).GetComponent<Button>();
-
-                    buttonsClickable.Add(cardButton);
-
-                    cardButton.onClick.AddListener(() =>
+                    if (drawnDiscardedCard != CardToString(playerCards.GetChild(i).GetComponent<CardInfo>()))
                     {
-                        if (activeAnimations == 0 && gameState == GameState.PLAYING && !isProcessing)
+                        Button cardButton = playerCards.GetChild(i).GetComponent<Button>();
+
+                        buttonsClickable.Add(cardButton);
+
+                        cardButton.onClick.AddListener(() =>
                         {
-                            CardInfo cardInfo = cardButton.GetComponent<CardInfo>();
-
-                            socketManager.socket.Emit("discard_card", new DiscardAction(CardToString(cardInfo), turnType, playerTurn, playerId));
-
-                            foreach (Button button in buttonsClickable)
+                            if (activeAnimations == 0 && gameState == GameState.PLAYING && !isProcessing)
                             {
-                                button.onClick.RemoveAllListeners();
+                                CardInfo cardInfo = cardButton.GetComponent<CardInfo>();
+
+                                socketManager.socket.Emit("discard_card", new DiscardAction(CardToString(cardInfo), turnType, playerTurn, playerId, "", true));
+
+                                foreach (Button button in buttonsClickable)
+                                {
+                                    button.onClick.RemoveAllListeners();
+                                }
                             }
-                        }
-                    });
+                        });
+                    }
                 }
             }
         }
@@ -800,10 +860,7 @@ public class MultiplayerManager : MonoBehaviour
 
         gameState = GameState.RESULT;
 
-        var task = DisconnectSocket();
-        yield return new WaitUntil(() => task.IsCompleted);
-
-        socketManager.onServerEvent -= HandleServerEvent;
+        yield return CleanupSocket();
 
         yield return new WaitForSecondsRealtime(0.3f);
         Time.timeScale = 1f;
